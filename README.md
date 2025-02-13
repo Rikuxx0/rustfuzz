@@ -32,7 +32,7 @@ Example:
 /target/release/rustfuzz http://example.com/login
 ```
 
-You can check various Injection tests and detect Injection vulnerbilities
+You can check various Injection tests and detect Injection vulnerbilities.
 This is the same to previous Python-based FuzzingTool.
 
 ## Notes
