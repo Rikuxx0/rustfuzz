@@ -430,6 +430,8 @@ Ok(())
     }
 
 
+
+
     //XPathインジェクションをテストする関数
     async fn test_xpath_injection(xml_data: &str, xpath_query: &str) -> Result<(), Box<dyn Error>> {
         //XMLパーサーの作成
@@ -554,17 +556,20 @@ async fn main () -> Result<(), Box<dyn Error>> {
         Err(e) => eprintln!("Error: {}", e),
     }
 
+    
+
+
 
     println!("=== XPath Injection Test ===");
     let xpath_query = "/users/user[name='";
 
-    println!("Starting XPath Injection Test...");
-    let _ = test_xpath_injection(xml_data.first().map(|s: &String| s.as_str()).unwrap_or(""), xpath_query).await;
+    println!("Starting XPath Injection Test..."); //String -> &str
+    let _ = test_xpath_injection(xml_data.first().map(String::as_str).unwrap_or_else(|| ""), xpath_query).await;
 
-    println!("=== XSLT Injection Test ===");
-    let _ = test_xslt_injection(XSLT_PAYLOAD, xml_data.first().map(|s: &String| s.as_str()).unwrap_or("")).await;
-    println!("=== XXE Injection Test ===");
-    let _ = test_xxe(xml_data.first().map(|s: &String| s.as_str()).unwrap_or("")).await;
+    println!("=== XSLT Injection Test ===");        //String -> &str
+    let _ = test_xslt_injection(XSLT_PAYLOAD, xml_data.first().map(String::as_str).unwrap_or_else(|| "")).await;
+    println!("=== XXE Injection Test ===");       //String -> &str  
+    let _ = test_xxe(xml_data.first().map(String::as_str).unwrap_or_else(|| "")).await;
 
     println!("Finish check!");
     
