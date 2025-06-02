@@ -39,5 +39,3 @@ This is the same to previous Python-based FuzzingTool.
 - Ensure you have proper authorization before testing a target system.
 - Use responsibly and only for ethical penetration testing.
 
-## License
-This tool is open-source and available under the MIT License. Feel free to use and modify it for your testing needs.
